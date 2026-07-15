@@ -1,43 +1,63 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { StatementUpload } from './components/StatementUpload'
+import type { User } from './auth'
+import { clearToken, fetchMe, getToken } from './auth'
+import { AuthScreen } from './components/AuthScreen'
 import { Dashboard } from './components/Dashboard'
-
-const API_BASE = 'http://localhost:8000'
-
-type HealthResponse = {
-  status: string
-  database: string
-}
+import { StatementUpload } from './components/StatementUpload'
 
 type Tab = 'dashboard' | 'upload'
 
 function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [user, setUser] = useState<User | null>(null)
+  // Distinct from "no user": on first paint we don't yet know whether the
+  // stored token is still valid, and flashing the login screen at a signed-in
+  // user would be wrong.
+  const [checkingSession, setCheckingSession] = useState(true)
   const [tab, setTab] = useState<Tab>('upload')
   const [dashboardAccountId, setDashboardAccountId] = useState<number | null>(null)
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/health`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Backend responded with ${res.status}`)
-        return res.json()
-      })
-      .then(setHealth)
-      .catch((err) => setError(err.message))
+    if (!getToken()) {
+      setCheckingSession(false)
+      return
+    }
+    fetchMe()
+      .then(setUser)
+      .catch(() => clearToken())
+      .finally(() => setCheckingSession(false))
   }, [])
 
-  const isOk = health?.status === 'ok' && health?.database === 'connected'
+  function handleSignOut() {
+    clearToken()
+    setUser(null)
+    setTab('upload')
+    setDashboardAccountId(null)
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="auth-shell">
+        <div className="inline-loading">
+          <span className="spinner" />
+          Loading...
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <AuthScreen onAuthenticated={setUser} />
+  }
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <h1 className="app-title">Personal Finance</h1>
-        <span className={`status-pill ${error ? 'error' : isOk ? 'ok' : ''}`}>
-          <span className="dot" />
-          {error ? 'Backend unreachable' : isOk ? 'Connected' : 'Checking...'}
-        </span>
+        <div className="header-actions">
+          <span className="muted">{user.email}</span>
+          <button className="btn btn-secondary btn-sm" onClick={handleSignOut}>Sign out</button>
+        </div>
       </header>
 
       <nav className="tab-nav">

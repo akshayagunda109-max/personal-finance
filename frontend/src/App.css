@@ -20,44 +20,52 @@
   letter-spacing: -0.02em;
 }
 
-/* ---------- Status pill ---------- */
-
-.status-pill {
-  display: inline-flex;
+.header-actions {
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
+  gap: 0.75rem;
 }
 
-.status-pill .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
+/* ---------- Auth screen ---------- */
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
 }
 
-.status-pill.ok {
-  color: var(--success);
-  background: var(--success-bg);
-  border-color: transparent;
-}
-.status-pill.ok .dot {
-  background: var(--success);
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  margin-bottom: 0;
 }
 
-.status-pill.error {
-  color: var(--danger);
-  background: var(--danger-bg);
-  border-color: transparent;
+.auth-title {
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
 }
-.status-pill.error .dot {
-  background: var(--danger);
+
+.auth-subtitle {
+  margin-top: 0.25rem;
+}
+
+.auth-tabs {
+  margin: 1.25rem 0 1rem;
+}
+
+.auth-field {
+  margin-bottom: 1rem;
+}
+
+.auth-field .input {
+  width: 100%;
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 0.25rem;
 }
 
 /* ---------- Card ---------- */

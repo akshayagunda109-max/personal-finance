@@ -1,6 +1,7 @@
-"""Read-only transaction listing, plus AI-based categorization.
+"""Transaction listing, AI categorization, and per-account summaries.
 
-Full transaction CRUD (edit, delete, manual add) is a later feature.
+Every endpoint is scoped to the authenticated user - an account id belonging
+to someone else reads as "not found".
 """
 from collections import Counter, defaultdict
 from decimal import Decimal
@@ -10,7 +11,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Transaction
+from app.dependencies import get_current_user, get_owned_account
+from app.models import Account, Transaction, User
 from app.schemas.transaction import (
     CategorizeResponse,
     CategoryBreakdownEntry,
@@ -31,10 +33,17 @@ router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 def list_transactions(
     account_id: int | None = Query(default=None),
     category: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Transaction).order_by(Transaction.date.desc())
+    stmt = (
+        select(Transaction)
+        .join(Account, Transaction.account_id == Account.id)
+        .where(Account.user_id == user.id)
+        .order_by(Transaction.date.desc())
+    )
     if account_id is not None:
+        get_owned_account(account_id, user, db)
         stmt = stmt.where(Transaction.account_id == account_id)
     if category is not None:
         stmt = stmt.where(Transaction.category == category)
@@ -42,11 +51,17 @@ def list_transactions(
 
 
 @router.post("/categorize", response_model=CategorizeResponse)
-def categorize_transactions(account_id: int, db: Session = Depends(get_db)):
+def categorize_transactions(
+    account_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Classify (and derive a display name for) transactions missing either
     field, via the Gemini API. Rows that already have both a category and a
     display name are left untouched - including ones a user manually
     recategorized, so a later re-run never overwrites that choice."""
+    get_owned_account(account_id, user, db)
+
     stmt = select(Transaction).where(
         Transaction.account_id == account_id,
         or_(Transaction.category.is_(None), Transaction.display_name.is_(None)),
@@ -79,14 +94,19 @@ def categorize_transactions(account_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{transaction_id}", response_model=TransactionRead)
 def update_transaction_category(
-    transaction_id: int, payload: TransactionCategoryUpdate, db: Session = Depends(get_db)
+    transaction_id: int,
+    payload: TransactionCategoryUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Manually override a transaction's category - either one of the built-in
     categories or a user-defined one (validation just guards against blank/
     oversized names; the fixed set is only enforced for AI auto-categorization)."""
     txn = db.get(Transaction, transaction_id)
-    if not txn:
+    if txn is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    # Ownership lives on the parent account, so check it there.
+    get_owned_account(txn.account_id, user, db)
 
     txn.category = payload.category
     db.commit()
@@ -95,10 +115,16 @@ def update_transaction_category(
 
 
 @router.get("/category-summary", response_model=CategorySummaryResponse)
-def category_summary(account_id: int, db: Session = Depends(get_db)):
+def category_summary(
+    account_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Category totals across every categorized transaction in the account,
     regardless of when it was imported or categorized - so re-uploading an
     already-imported statement still shows the account's full breakdown."""
+    get_owned_account(account_id, user, db)
+
     stmt = select(Transaction).where(
         Transaction.account_id == account_id, Transaction.category.isnot(None)
     )
@@ -118,8 +144,14 @@ def category_summary(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/monthly-summary", response_model=MonthlySummaryResponse)
-def monthly_summary(account_id: int, db: Session = Depends(get_db)):
+def monthly_summary(
+    account_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Total spend and income per calendar month, for a spending-over-time trend."""
+    get_owned_account(account_id, user, db)
+
     stmt = select(Transaction).where(Transaction.account_id == account_id)
     transactions = db.execute(stmt).scalars().all()
 
@@ -141,9 +173,16 @@ def monthly_summary(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/category-insight", response_model=CategoryInsightResponse)
-def category_insight(account_id: int, category: str, db: Session = Depends(get_db)):
+def category_insight(
+    account_id: int,
+    category: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """AI-generated summary of what's driving one category: merchants, notable
     transactions, timing patterns."""
+    get_owned_account(account_id, user, db)
+
     stmt = select(Transaction).where(
         Transaction.account_id == account_id, Transaction.category == category
     ).order_by(Transaction.date)

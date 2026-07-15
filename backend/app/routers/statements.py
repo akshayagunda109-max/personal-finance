@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Account, Transaction
+from app.dependencies import get_current_user, get_owned_account
+from app.models import Transaction, User
 from app.schemas.statement import (
     ColumnMapping,
     FileImportResult,
@@ -28,7 +29,10 @@ router = APIRouter(prefix="/api/statements", tags=["statements"])
 
 
 @router.post("/preview", response_model=PreviewResponse)
-async def preview_statements(files: list[UploadFile]):
+async def preview_statements(
+    files: list[UploadFile],
+    user: User = Depends(get_current_user),
+):
     previews = []
     for upload in files:
         content = await upload.read()
@@ -61,11 +65,10 @@ async def import_statements(
     files: list[UploadFile],
     account_id: int = Form(...),
     mappings: str = Form(...),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    account = db.get(Account, account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
+    account = get_owned_account(account_id, user, db)
 
     try:
         raw_mappings = json.loads(mappings)
