@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react'
-import type { Account, CategorySummaryResponse, MonthlySummaryResponse, Transaction } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import type { Account, Transaction } from '../api'
 import {
   getCategoryInsight,
-  getCategorySummary,
-  getMonthlySummary,
   listAccounts,
   listTransactions,
   updateTransactionCategory,
@@ -16,6 +14,27 @@ function formatMoney(n: number): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+type Direction = 'all' | 'credit' | 'debit'
+
+type Filters = {
+  dateFrom: string
+  dateTo: string
+  direction: Direction
+  category: string // 'all' or a specific category
+}
+
+const DEFAULT_FILTERS: Filters = { dateFrom: '', dateTo: '', direction: 'all', category: 'all' }
+
+function matchesFilters(t: Transaction, filters: Filters): boolean {
+  if (filters.dateFrom && t.date < filters.dateFrom) return false
+  if (filters.dateTo && t.date > filters.dateTo) return false
+  const amount = Number(t.amount)
+  if (filters.direction === 'credit' && amount <= 0) return false
+  if (filters.direction === 'debit' && amount >= 0) return false
+  if (filters.category !== 'all' && t.category !== filters.category) return false
+  return true
+}
+
 type Props = {
   initialAccountId?: number | null
 }
@@ -24,13 +43,11 @@ export function Dashboard({ initialAccountId }: Props) {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [accountId, setAccountId] = useState<number | null>(null)
   const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [summary, setSummary] = useState<CategorySummaryResponse | null>(null)
-  const [monthly, setMonthly] = useState<MonthlySummaryResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
-  const [categoryTxns, setCategoryTxns] = useState<Transaction[]>([])
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
+
   const [insight, setInsight] = useState<string | null>(null)
   const [insightLoading, setInsightLoading] = useState(false)
   const [insightError, setInsightError] = useState<string | null>(null)
@@ -58,47 +75,36 @@ export function Dashboard({ initialAccountId }: Props) {
     if (accountId === null) return
     setLoading(true)
     setError(null)
-    setSelectedCategory(null)
-    Promise.all([
-      listTransactions(accountId),
-      getCategorySummary(accountId),
-      getMonthlySummary(accountId),
-    ])
-      .then(([txns, catSummary, monthlySummary]) => {
-        setTransactions(txns)
-        setSummary(catSummary)
-        setMonthly(monthlySummary)
-      })
+    setFilters(DEFAULT_FILTERS)
+    listTransactions(accountId)
+      .then(setTransactions)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
   }, [accountId])
 
-  function selectCategory(category: string) {
-    if (accountId === null) return
-    setSelectedCategory(category)
-    setInsight(null)
-    setInsightError(null)
-    listTransactions(accountId, category).then(setCategoryTxns).catch((e: Error) => setError(e.message))
-
+  // The AI summary is tied to whichever single category is selected - it
+  // reflects that category's full history, not the date/direction filters.
+  useEffect(() => {
+    if (accountId === null || filters.category === 'all') {
+      setInsight(null)
+      setInsightError(null)
+      return
+    }
     setInsightLoading(true)
-    getCategoryInsight(accountId, category)
+    setInsightError(null)
+    getCategoryInsight(accountId, filters.category)
       .then((res) => setInsight(res.summary))
       .catch((e: Error) => setInsightError(e.message))
       .finally(() => setInsightLoading(false))
-  }
+  }, [accountId, filters.category])
 
   async function handleCategoryChange(txn: Transaction, newCategory: string) {
-    if (accountId === null || newCategory === txn.category) return
+    if (newCategory === txn.category) return
     setSavingId(txn.id)
     setError(null)
     try {
-      await updateTransactionCategory(txn.id, newCategory)
-      const [catSummary, updatedList] = await Promise.all([
-        getCategorySummary(accountId),
-        listTransactions(accountId, selectedCategory ?? undefined),
-      ])
-      setSummary(catSummary)
-      setCategoryTxns(updatedList)
+      const updated = await updateTransactionCategory(txn.id, newCategory)
+      setTransactions((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -124,30 +130,48 @@ export function Dashboard({ initialAccountId }: Props) {
     setNewCategoryDraft('')
   }
 
-  const totalIncome = transactions.filter((t) => Number(t.amount) > 0).reduce((s, t) => s + Number(t.amount), 0)
-  const totalSpend = transactions.filter((t) => Number(t.amount) < 0).reduce((s, t) => s + Math.abs(Number(t.amount)), 0)
+  const filteredTransactions = useMemo(
+    () => transactions.filter((t) => matchesFilters(t, filters)),
+    [transactions, filters],
+  )
+
+  const totalIncome = filteredTransactions.filter((t) => Number(t.amount) > 0).reduce((s, t) => s + Number(t.amount), 0)
+  const totalSpend = filteredTransactions.filter((t) => Number(t.amount) < 0).reduce((s, t) => s + Math.abs(Number(t.amount)), 0)
   const net = totalIncome - totalSpend
 
-  const barData = summary
-    ? Object.entries(summary.breakdown).map(([category, entry]) => ({
-      category,
-      count: entry.count,
-      amount: Number(entry.total_amount),
-    }))
-    : []
+  const barData = useMemo(() => {
+    const byCategory = new Map<string, { count: number; amount: number }>()
+    for (const t of filteredTransactions) {
+      if (!t.category) continue
+      const entry = byCategory.get(t.category) ?? { count: 0, amount: 0 }
+      entry.count += 1
+      entry.amount += Number(t.amount)
+      byCategory.set(t.category, entry)
+    }
+    return Array.from(byCategory.entries()).map(([category, { count, amount }]) => ({ category, count, amount }))
+  }, [filteredTransactions])
 
-  const monthlyData = monthly
-    ? monthly.months.map((m) => ({ month: m.month, spend: Number(m.total_spend) }))
-    : []
+  const monthlyData = useMemo(() => {
+    const byMonth = new Map<string, number>()
+    for (const t of filteredTransactions) {
+      const amount = Number(t.amount)
+      if (amount >= 0) continue
+      const month = t.date.slice(0, 7)
+      byMonth.set(month, (byMonth.get(month) ?? 0) + Math.abs(amount))
+    }
+    return Array.from(byMonth.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, spend]) => ({ month, spend }))
+  }, [filteredTransactions])
 
-  // Built-in categories first, then any custom ones already used in this
-  // account that aren't already in the built-in set.
-  const dropdownCategories = [
-    ...ALL_CATEGORIES,
-    ...Object.keys(summary?.breakdown ?? {}).filter((c) => !ALL_CATEGORIES.includes(c)),
-  ]
+  // Built-in categories first, then any custom ones already used in this account.
+  const dropdownCategories = useMemo(() => {
+    const used = Array.from(new Set(transactions.map((t) => t.category).filter((c): c is string => !!c)))
+    return [...ALL_CATEGORIES, ...used.filter((c) => !ALL_CATEGORIES.includes(c))]
+  }, [transactions])
 
   const currency = accounts.find((a) => a.id === accountId)?.currency ?? ''
+  const filtersActive = filters.dateFrom || filters.dateTo || filters.direction !== 'all' || filters.category !== 'all'
 
   return (
     <div>
@@ -169,6 +193,59 @@ export function Dashboard({ initialAccountId }: Props) {
             ))}
           </select>
         </div>
+
+        <div className="form-row section-gap">
+          <div className="form-field">
+            <label htmlFor="filter-date-from">From</label>
+            <input
+              id="filter-date-from"
+              type="date"
+              className="input"
+              value={filters.dateFrom}
+              onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))}
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="filter-date-to">To</label>
+            <input
+              id="filter-date-to"
+              type="date"
+              className="input"
+              value={filters.dateTo}
+              onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))}
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="filter-direction">Type</label>
+            <select
+              id="filter-direction"
+              className="select"
+              value={filters.direction}
+              onChange={(e) => setFilters((f) => ({ ...f, direction: e.target.value as Direction }))}
+            >
+              <option value="all">All</option>
+              <option value="credit">Credit (money in)</option>
+              <option value="debit">Debit (money out)</option>
+            </select>
+          </div>
+          <div className="form-field">
+            <label htmlFor="filter-category">Category</label>
+            <select
+              id="filter-category"
+              className="select"
+              value={filters.category}
+              onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value }))}
+            >
+              <option value="all">All categories</option>
+              {dropdownCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {filtersActive && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+              Clear filters
+            </button>
+          )}
+        </div>
       </div>
 
       {loading && (
@@ -182,7 +259,7 @@ export function Dashboard({ initialAccountId }: Props) {
         <>
           <div className="stat-grid">
             <div className="stat-card">
-              <div className="stat-value">{transactions.length}</div>
+              <div className="stat-value">{filteredTransactions.length}</div>
               <div className="stat-label">Transactions</div>
             </div>
             <div className="stat-card">
@@ -209,34 +286,46 @@ export function Dashboard({ initialAccountId }: Props) {
           <div className="card">
             <div className="card-title">Spending by category</div>
             {barData.length === 0 ? (
-              <p className="muted">No categorized transactions yet.</p>
+              <p className="muted">No categorized transactions match the current filters.</p>
             ) : (
               <>
-                <CategoryBarChart data={barData} selected={selectedCategory} onSelect={selectCategory} />
-                <p className="field-hint">Click a category to see its transactions and an AI summary.</p>
+                <CategoryBarChart
+                  data={barData}
+                  selected={filters.category === 'all' ? null : filters.category}
+                  onSelect={(category) => setFilters((f) => ({ ...f, category }))}
+                />
+                <p className="field-hint">Click a category to filter the table below and see an AI summary.</p>
               </>
             )}
           </div>
 
-          {selectedCategory && (
-            <div className="card">
-              <div className="card-title">
-                <span className="category-dot" style={{ background: categoryColorVar(selectedCategory), marginRight: '0.5rem' }} />
-                {selectedCategory}
-              </div>
-
-              {insightLoading && (
-                <div className="inline-loading" style={{ marginBottom: '0.75rem' }}>
-                  <span className="spinner" />
-                  Generating summary...
+          <div className="card">
+            {filters.category !== 'all' ? (
+              <>
+                <div className="card-title">
+                  <span className="category-dot" style={{ background: categoryColorVar(filters.category), marginRight: '0.5rem' }} />
+                  {filters.category}
                 </div>
-              )}
-              {insightError && <div className="alert alert-error">{insightError}</div>}
-              {insight && <p className="insight-box">{insight}</p>}
 
-              <p className="field-hint section-gap">
-                Recheck each transaction below - if a category looks wrong, change it in the dropdown.
-              </p>
+                {insightLoading && (
+                  <div className="inline-loading" style={{ marginBottom: '0.75rem' }}>
+                    <span className="spinner" />
+                    Generating summary...
+                  </div>
+                )}
+                {insightError && <div className="alert alert-error">{insightError}</div>}
+                {insight && <p className="insight-box">{insight}</p>}
+              </>
+            ) : (
+              <div className="card-title">Transactions</div>
+            )}
+
+            <p className="field-hint section-gap">
+              Recheck each transaction below - if a category looks wrong, change it in the dropdown.
+            </p>
+            {filteredTransactions.length === 0 ? (
+              <p className="muted">No transactions match the current filters.</p>
+            ) : (
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
@@ -248,7 +337,7 @@ export function Dashboard({ initialAccountId }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {categoryTxns.map((t) => (
+                    {filteredTransactions.map((t) => (
                       <tr key={t.id}>
                         <td>{t.date}</td>
                         <td title={t.description}>{t.display_name ?? t.description}</td>
@@ -298,8 +387,8 @@ export function Dashboard({ initialAccountId }: Props) {
                   </tbody>
                 </table>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </>
       )}
 
