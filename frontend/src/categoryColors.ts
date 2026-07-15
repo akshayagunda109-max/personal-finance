@@ -21,5 +21,8 @@ export function categoryColorVar(category: string): string {
 }
 
 // Mirrors backend app/services/categories.py - the fixed set a transaction
-// can be manually reassigned to.
-export const ALL_CATEGORIES = [...CATEGORY_HUE_ORDER, 'Transfers', 'Uncategorized']
+// can be manually reassigned to. Investing/Trading, Transfers, and
+// Uncategorized render in the muted color rather than a fixed hue (see
+// categoryColorVar) - they're not identity categories in the same sense as
+// the 8 in CATEGORY_HUE_ORDER, and the validated palette is capped at 8.
+export const ALL_CATEGORIES = [...CATEGORY_HUE_ORDER, 'Investing / Trading', 'Transfers', 'Uncategorized']

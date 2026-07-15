@@ -9,6 +9,7 @@ CATEGORIES = [
     "Bills & Utilities",
     "Healthcare",
     "Income",
+    "Investing / Trading",
     "Transfers",
     "Uncategorized",
 ]
